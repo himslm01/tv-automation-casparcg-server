@@ -31,6 +31,7 @@
 #include <core/consumer/frame_consumer.h>
 #include <core/diagnostics/call_context.h>
 #include <core/frame/frame.h>
+#include <core/frame/frame_timecode.h>
 #include <core/mixer/audio/audio_mixer.h>
 
 #include <common/array.h>
@@ -82,10 +83,9 @@ struct configuration
     bool      key_only          = false;
     int       base_buffer_depth = 3;
 
-    int buffer_depth() const 
-    { 
-        return base_buffer_depth + 
-               (latency == latency_t::low_latency ? 0 : 1) + 
+    int buffer_depth() const
+    {
+        return base_buffer_depth + (latency == latency_t::low_latency ? 0 : 1) +
                (embedded_audio ? 1 : 0); // TODO: Do we need this?
     }
 
@@ -134,17 +134,74 @@ void set_keyer(const com_iface_ptr<IDeckLinkAttributes>& attributes,
     }
 }
 
+class decklink_timecode : public IDeckLinkTimecode
+{
+    std::atomic<int>     ref_count_{0};
+    core::frame_timecode timecode_;
+    BMDTimecodeFlags     flags_;
+
+  public:
+    decklink_timecode(const core::frame_timecode& timecode, const BMDTimecodeFlags flags)
+        : timecode_(timecode)
+        , flags_(flags)
+    {
+    }
+
+    // IUnknown
+
+    virtual HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, LPVOID*) { return E_NOINTERFACE; }
+
+    virtual ULONG STDMETHODCALLTYPE AddRef() { return ++ref_count_; }
+
+    virtual ULONG STDMETHODCALLTYPE Release()
+    {
+        if (--ref_count_ == 0) {
+            delete this;
+
+            return 0;
+        }
+
+        return ref_count_;
+    }
+
+    // IDeckLinkTimecode
+
+    BMDTimecodeBCD GetBCD() override { return timecode_.bcd(); }
+
+    HRESULT
+    GetComponents(unsigned char* hours, unsigned char* minutes, unsigned char* seconds, unsigned char* frames) override
+    {
+        timecode_.get_components(*hours, *minutes, *seconds, *frames, true);
+        return S_OK;
+    }
+
+#ifdef _WIN32
+    HRESULT GetString(BSTR* timecode) override { return S_FALSE; }
+#else
+    HRESULT GetString(const char** timecode) override { return S_FALSE; }
+#endif
+
+    BMDTimecodeFlags GetFlags() override { return flags_; }
+
+    HRESULT GetTimecodeUserBits(BMDTimecodeUserBits* userBits) override { return 0; }
+};
+
 class decklink_frame : public IDeckLinkVideoFrame
 {
     core::video_format_desc format_desc_;
+    core::frame_timecode    timecode_;
     std::shared_ptr<void>   data_;
     std::atomic<int>        ref_count_{0};
     int                     nb_samples_;
 
   public:
-    decklink_frame(std::shared_ptr<void> data, const core::video_format_desc& format_desc, int nb_samples)
+    decklink_frame(std::shared_ptr<void>          data,
+                   const core::video_format_desc& format_desc,
+                   const core::frame_timecode&    timecode,
+                   int                            nb_samples)
         : data_(data)
         , format_desc_(format_desc)
+        , timecode_(timecode)
         , nb_samples_(nb_samples)
     {
     }
@@ -182,8 +239,17 @@ class decklink_frame : public IDeckLinkVideoFrame
 
     virtual HRESULT STDMETHODCALLTYPE GetTimecode(BMDTimecodeFormat format, IDeckLinkTimecode** timecode)
     {
-        return S_FALSE;
+        // TODO - handle drop frame
+
+        if (format == bmdTimecodeRP188VITC2 || format == bmdTimecodeVITCField2) {
+            *timecode = new decklink_timecode(timecode_, bmdTimecodeFlagDefault | bmdTimecodeFieldMark);
+            return S_OK;
+        }
+
+        *timecode = new decklink_timecode(timecode_, bmdTimecodeFlagDefault);
+        return S_OK;
     }
+
     virtual HRESULT STDMETHODCALLTYPE GetAncillaryData(IDeckLinkVideoFrameAncillary** ancillary) { return S_FALSE; }
 
     int nb_samples() const { return nb_samples_; }
@@ -216,7 +282,8 @@ struct key_video_context : public IDeckLinkVideoOutputCallback
     template <typename Print>
     void enable_video(BMDDisplayMode display_mode, const Print& print)
     {
-        if (FAILED(output_->EnableVideoOutput(display_mode, bmdVideoOutputFlagDefault)))
+        if (FAILED(output_->EnableVideoOutput(
+                display_mode, static_cast<BMDVideoOutputFlags>(bmdVideoOutputRP188 | bmdVideoOutputVITC))))
             CASPAR_THROW_EXCEPTION(caspar_exception() << msg_info(print() + L" Could not enable key video output."));
 
         if (FAILED(output_->SetScheduledFrameCompletionCallback(this)))
@@ -267,10 +334,10 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
     const std::wstring            model_name_ = get_model_name(decklink_);
     const core::video_format_desc format_desc_;
 
-    std::mutex                    buffer_mutex_;
-    std::condition_variable       buffer_cond_;
-    std::queue<core::const_frame> buffer_;
-    int                           buffer_capacity_ = 1;
+    std::mutex                                                     buffer_mutex_;
+    std::condition_variable                                        buffer_cond_;
+    std::queue<std::pair<core::frame_timecode, core::const_frame>> buffer_;
+    int                                                            buffer_capacity_ = 1;
 
     const int buffer_size_ = config_.buffer_depth(); // Minimum buffer-size 3.
 
@@ -335,7 +402,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
             }
 
             std::shared_ptr<void> image_data(scalable_aligned_malloc(format_desc_.size, 64), scalable_aligned_free);
-            schedule_next_video(image_data, nb_samples);
+            schedule_next_video(image_data, core::frame_timecode::empty(), nb_samples);
         }
 
         if (config.embedded_audio) {
@@ -373,7 +440,8 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
 
     void enable_video(BMDDisplayMode display_mode)
     {
-        if (FAILED(output_->EnableVideoOutput(display_mode, bmdVideoOutputFlagDefault))) {
+        if (FAILED(output_->EnableVideoOutput(
+                display_mode, static_cast<BMDVideoOutputFlags>(bmdVideoOutputRP188 | bmdVideoOutputVITC)))) {
             CASPAR_THROW_EXCEPTION(caspar_exception() << msg_info(print() + L" Could not enable fill video output."));
         }
 
@@ -455,7 +523,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
             std::shared_ptr<void>     image_data(scalable_aligned_malloc(format_desc_.size, 64), scalable_aligned_free);
             std::vector<std::int32_t> audio_data;
 
-            std::vector<core::const_frame> frames{pop()};
+            std::vector<std::pair<core::frame_timecode, core::const_frame>> frames{pop()};
             if (mode_->GetFieldDominance() != bmdProgressiveFrame) {
                 std::this_thread::sleep_for(std::chrono::microseconds(static_cast<int>(1e6 / format_desc_.fps)));
 
@@ -471,12 +539,14 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
 
                 for (auto y = 0; y < format_desc_.height; ++y) {
                     std::memcpy(reinterpret_cast<char*>(image_data.get()) + y * format_desc_.width * 4,
-                                frames[y % 2].image_data(0).data() + y * format_desc_.width * 4,
+                                frames[y % 2].second.image_data(0).data() + y * format_desc_.width * 4,
                                 format_desc_.width * 4);
                 }
 
-                audio_data.insert(audio_data.end(), frames[0].audio_data().begin(), frames[0].audio_data().end());
-                audio_data.insert(audio_data.end(), frames[1].audio_data().begin(), frames[1].audio_data().end());
+                audio_data.insert(
+                    audio_data.end(), frames[0].second.audio_data().begin(), frames[0].second.audio_data().end());
+                audio_data.insert(
+                    audio_data.end(), frames[1].second.audio_data().begin(), frames[1].second.audio_data().end());
             } else {
                 if (abort_request_) {
                     return E_FAIL;
@@ -484,16 +554,17 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
 
                 for (auto y = 0; y < format_desc_.height; ++y) {
                     std::memcpy(reinterpret_cast<char*>(image_data.get()) + y * format_desc_.width * 4,
-                                frames[0].image_data(0).data() + y * format_desc_.width * 4,
+                                frames[0].second.image_data(0).data() + y * format_desc_.width * 4,
                                 format_desc_.width * 4);
                 }
 
-                audio_data.insert(audio_data.end(), frames[0].audio_data().begin(), frames[0].audio_data().end());
+                audio_data.insert(
+                    audio_data.end(), frames[0].second.audio_data().begin(), frames[0].second.audio_data().end());
             }
 
             const auto nb_samples = static_cast<int>(audio_data.size()) / format_desc_.audio_channels;
 
-            schedule_next_video(image_data, nb_samples);
+            schedule_next_video(image_data, frames[0].first, nb_samples);
 
             if (config_.embedded_audio) {
                 schedule_next_audio(std::move(audio_data), nb_samples);
@@ -507,9 +578,9 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
         return S_OK;
     }
 
-    core::const_frame pop()
+    std::pair<core::frame_timecode, core::const_frame> pop()
     {
-        core::const_frame frame;
+        std::pair<core::frame_timecode, core::const_frame> frame;
         {
             std::unique_lock<std::mutex> lock(buffer_mutex_);
             buffer_cond_.wait(lock, [&] { return !buffer_.empty() || abort_request_; });
@@ -539,7 +610,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
         audio_scheduled_ += nb_samples;
     }
 
-    void schedule_next_video(std::shared_ptr<void> fill, int nb_samples)
+    void schedule_next_video(std::shared_ptr<void> fill, core::frame_timecode timecode, int nb_samples)
     {
         std::shared_ptr<void> key;
 
@@ -554,7 +625,8 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
         }
 
         if (key_context_) {
-            auto key_frame = wrap_raw<com_ptr, IDeckLinkVideoFrame>(new decklink_frame(key, format_desc_, nb_samples));
+            auto key_frame =
+                wrap_raw<com_ptr, IDeckLinkVideoFrame>(new decklink_frame(key, format_desc_, timecode, nb_samples));
             if (FAILED(key_context_->output_->ScheduleVideoFrame(get_raw(key_frame),
                                                                  video_scheduled_,
                                                                  format_desc_.duration * field_count_,
@@ -563,7 +635,8 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
             }
         }
 
-        auto fill_frame = wrap_raw<com_ptr, IDeckLinkVideoFrame>(new decklink_frame(fill, format_desc_, nb_samples));
+        auto fill_frame =
+            wrap_raw<com_ptr, IDeckLinkVideoFrame>(new decklink_frame(fill, format_desc_, timecode, nb_samples));
         if (FAILED(output_->ScheduleVideoFrame(get_raw(fill_frame),
                                                video_scheduled_,
                                                format_desc_.duration * field_count_,
@@ -574,7 +647,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
         video_scheduled_ += format_desc_.duration * field_count_;
     }
 
-    bool send(core::const_frame frame)
+    bool send(core::frame_timecode timecode, core::const_frame frame)
     {
         {
             std::lock_guard<std::mutex> lock(exception_mutex_);
@@ -590,7 +663,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
         {
             std::unique_lock<std::mutex> lock(buffer_mutex_);
             buffer_cond_.wait(lock, [&] { return buffer_.size() < buffer_capacity_ || abort_request_; });
-            buffer_.push(std::move(frame));
+            buffer_.push(std::make_pair(timecode, std::move(frame)));
         }
         buffer_cond_.notify_all();
 
@@ -643,9 +716,9 @@ struct decklink_consumer_proxy : public core::frame_consumer
         });
     }
 
-    std::future<bool> send(core::const_frame frame) override
+    std::future<bool> send(core::frame_timecode timecode, core::const_frame frame) override
     {
-        return executor_.begin_invoke([=] { return consumer_->send(frame); });
+        return executor_.begin_invoke([=] { return consumer_->send(timecode, frame); });
     }
 
     std::wstring print() const override { return consumer_ ? consumer_->print() : L"[decklink_consumer]"; }

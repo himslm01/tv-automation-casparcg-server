@@ -43,12 +43,21 @@
 #include <core/mixer/image/image_mixer.h>
 
 #include <boost/lexical_cast.hpp>
+#include <boost/thread/lock_guard.hpp>
 
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <utility>
 
 namespace caspar { namespace core {
+
+template <typename T, typename F>
+auto lock(T& mutex, F&& func) -> decltype(func())
+{
+    boost::lock_guard<T> lock(mutex);
+    return func();
+}
 
 struct video_channel::impl final
 {
@@ -56,8 +65,9 @@ struct video_channel::impl final
 
     const int index_;
 
-    mutable std::mutex      format_desc_mutex_;
-    core::video_format_desc format_desc_;
+    mutable std::mutex                format_desc_mutex_;
+    core::video_format_desc           format_desc_;
+    std::shared_ptr<channel_timecode> timecode_;
 
     const spl::shared_ptr<caspar::diagnostics::graph> graph_ = [](int index) {
         core::diagnostics::scoped_call_context save;
@@ -68,7 +78,7 @@ struct video_channel::impl final
     caspar::core::output         output_;
     spl::shared_ptr<image_mixer> image_mixer_;
     caspar::core::mixer          mixer_;
-    caspar::core::stage          stage_;
+    std::shared_ptr<core::stage> stage_;
 
     std::vector<int> audio_cadence_ = format_desc_.audio_cadence;
 
@@ -76,6 +86,11 @@ struct video_channel::impl final
 
     std::map<int, std::weak_ptr<core::route>> routes_;
     std::mutex                                routes_mutex_;
+
+    mutable tbb::spin_mutex timecode_listeners_mutex_;
+    int64_t                 last_timecode_listener_id = 0;
+    std::unordered_map<int64_t, std::function<void(core::frame_timecode, spl::shared_ptr<caspar::diagnostics::graph>)>>
+        timecode_listeners_;
 
     std::atomic<bool> abort_request_{false};
     std::thread       thread_;
@@ -87,18 +102,23 @@ struct video_channel::impl final
          std::function<void(const monitor::state&)> tick)
         : index_(index)
         , format_desc_(format_desc)
+        , timecode_(std::make_shared<channel_timecode>(index, format_desc))
         , output_(graph_, format_desc, index)
         , image_mixer_(std::move(image_mixer))
         , mixer_(index, graph_, image_mixer_)
-        , stage_(index, graph_)
+        , stage_(std::make_shared<core::stage>(index, graph_))
         , tick_(tick)
     {
         graph_->set_color("produce-time", caspar::diagnostics::color(0.0f, 1.0f, 0.0f));
         graph_->set_color("mix-time", caspar::diagnostics::color(1.0f, 0.0f, 0.9f, 0.8f));
         graph_->set_color("consume-time", caspar::diagnostics::color(1.0f, 0.4f, 0.0f, 0.8f));
         graph_->set_color("osc-time", caspar::diagnostics::color(0.3f, 0.4f, 0.0f, 0.8f));
+        graph_->set_color("skipped-schedule", caspar::diagnostics::color(0.3f, 0.6f, 0.6f));
         graph_->set_text(print());
         caspar::diagnostics::register_graph(graph_);
+
+        // Sync the timecode with current time
+        timecode_->start();
 
         CASPAR_LOG(info) << print() << " Successfully Initialized.";
 
@@ -116,12 +136,22 @@ struct video_channel::impl final
 
                     state_.clear();
 
+                    // Predict the new timecode for any producers to use
+
+                    timecode_->tick(false);
+
                     // Produce
                     caspar::timer produce_timer;
-                    auto          stage_frames = stage_(format_desc, nb_samples);
+                    auto          stage_frames = (*stage_)(format_desc, nb_samples);
                     graph_->set_value("produce-time", produce_timer.elapsed() * format_desc.fps * 0.5);
 
-                    state_.insert_or_assign("stage", stage_.state());
+                    state_.insert_or_assign("stage", stage_->state());
+
+                    // Ensure it is accurate now the producer has run
+                    auto timecode = timecode_->tick(true);
+
+                    // Schedule commands for next timecode
+                    invoke_timecode_listeners(timecode);
 
                     // Mix
                     caspar::timer mix_timer;
@@ -132,7 +162,7 @@ struct video_channel::impl final
 
                     // Consume
                     caspar::timer consume_timer;
-                    output_(std::move(mixed_frame), format_desc);
+                    output_(timecode, std::move(mixed_frame), format_desc);
                     graph_->set_value("consume-time", consume_timer.elapsed() * format_desc.fps * 0.5);
 
                     {
@@ -162,6 +192,8 @@ struct video_channel::impl final
                     }
 
                     state_.insert_or_assign("output", output_.state());
+                    state_["timecode"] = timecode.string();
+                    state_["timecode/source"] = timecode_->source_name();
 
                     caspar::timer osc_timer;
                     tick_(state_);
@@ -209,7 +241,34 @@ struct video_channel::impl final
         std::lock_guard<std::mutex> lock(format_desc_mutex_);
         format_desc_   = format_desc;
         audio_cadence_ = format_desc_.audio_cadence;
-        stage_.clear();
+        timecode_->change_format(format_desc);
+        stage_->clear();
+    }
+
+    void invoke_timecode_listeners(const core::frame_timecode& timecode)
+    {
+        auto listeners = lock(timecode_listeners_mutex_, [=] { return timecode_listeners_; });
+
+        for (auto listener : listeners) {
+            try {
+                listener.second(timecode, graph_);
+            } catch (...) {
+                CASPAR_LOG_CURRENT_EXCEPTION();
+            }
+        }
+    }
+
+    std::shared_ptr<void> add_timecode_listener(
+        std::function<void(core::frame_timecode, spl::shared_ptr<caspar::diagnostics::graph>)> listener)
+    {
+        return lock(timecode_listeners_mutex_, [&] {
+            auto listener_id = last_timecode_listener_id++;
+            timecode_listeners_.insert(std::make_pair(listener_id, listener));
+
+            return std::shared_ptr<void>(nullptr, [=](void*) {
+                lock(timecode_listeners_mutex_, [&] { timecode_listeners_.erase(listener_id); });
+            });
+        });
     }
 
     std::wstring print() const
@@ -228,15 +287,15 @@ video_channel::video_channel(int                                        index,
 {
 }
 video_channel::~video_channel() {}
-const stage&                   video_channel::stage() const { return impl_->stage_; }
-stage&                         video_channel::stage() { return impl_->stage_; }
-const mixer&                   video_channel::mixer() const { return impl_->mixer_; }
-mixer&                         video_channel::mixer() { return impl_->mixer_; }
-const output&                  video_channel::output() const { return impl_->output_; }
-output&                        video_channel::output() { return impl_->output_; }
-spl::shared_ptr<frame_factory> video_channel::frame_factory() { return impl_->image_mixer_; }
-core::video_format_desc        video_channel::video_format_desc() const { return impl_->video_format_desc(); }
-void                           core::video_channel::video_format_desc(const core::video_format_desc& format_desc)
+const std::shared_ptr<core::stage>& video_channel::stage() const { return impl_->stage_; }
+std::shared_ptr<core::stage>&       video_channel::stage() { return impl_->stage_; }
+const mixer&                        video_channel::mixer() const { return impl_->mixer_; }
+mixer&                              video_channel::mixer() { return impl_->mixer_; }
+const output&                       video_channel::output() const { return impl_->output_; }
+output&                             video_channel::output() { return impl_->output_; }
+spl::shared_ptr<frame_factory>      video_channel::frame_factory() { return impl_->image_mixer_; }
+core::video_format_desc             video_channel::video_format_desc() const { return impl_->video_format_desc(); }
+void                                core::video_channel::video_format_desc(const core::video_format_desc& format_desc)
 {
     impl_->video_format_desc(format_desc);
 }
@@ -244,5 +303,11 @@ int                   video_channel::index() const { return impl_->index(); }
 const monitor::state& video_channel::state() const { return impl_->state_; }
 
 std::shared_ptr<route> video_channel::route(int index) { return impl_->route(index); }
+std::shared_ptr<void>  video_channel::add_timecode_listener(
+    std::function<void(core::frame_timecode, spl::shared_ptr<caspar::diagnostics::graph>)> listener)
+{
+    return impl_->add_timecode_listener(std::move(listener));
+}
+std::shared_ptr<core::channel_timecode> video_channel::timecode() const { return impl_->timecode_; }
 
 }} // namespace caspar::core

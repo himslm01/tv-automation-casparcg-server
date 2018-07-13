@@ -52,8 +52,7 @@
 #pragma warning(push)
 #pragma warning(disable : 4244)
 #endif
-extern "C"
-{
+extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavfilter/avfilter.h>
 #include <libavfilter/buffersink.h>
@@ -330,52 +329,33 @@ struct Stream
         }
 
         sws.reset(sws_getContext(
-            width, height, AV_PIX_FMT_BGRA,
-            width, height, AV_PIX_FMT_YUVA422P,
-            0, nullptr, nullptr, nullptr
-        ), [](SwsContext* ptr) { sws_freeContext(ptr); });
+                      width, height, AV_PIX_FMT_BGRA, width, height, AV_PIX_FMT_YUVA422P, 0, nullptr, nullptr, nullptr),
+                  [](SwsContext* ptr) { sws_freeContext(ptr); });
 
         if (!sws) {
             CASPAR_THROW_EXCEPTION(caspar_exception());
         }
 
-        int brigthness;
-        int contrast;
-        int saturation;
-        int in_full;
-        int out_full;
+        int        brigthness;
+        int        contrast;
+        int        saturation;
+        int        in_full;
+        int        out_full;
         const int* inv_table;
         const int* table;
 
         sws_getColorspaceDetails(
-            sws.get(),
-            (int**)&inv_table,
-            &in_full,
-            (int**)&table,
-            &out_full,
-            &brigthness,
-            &contrast,
-            &saturation);
+            sws.get(), (int**)&inv_table, &in_full, (int**)&table, &out_full, &brigthness, &contrast, &saturation);
 
         inv_table = sws_getCoefficients(AVCOL_SPC_RGB);
-        table = sws_getCoefficients(AVCOL_SPC_BT709);
+        table     = sws_getCoefficients(AVCOL_SPC_BT709);
 
-        in_full = AVCOL_RANGE_JPEG;
+        in_full  = AVCOL_RANGE_JPEG;
         out_full = AVCOL_RANGE_MPEG;
 
-        sws_setColorspaceDetails(
-            sws.get(),
-            inv_table,
-            in_full,
-            table,
-            out_full,
-            brigthness,
-            contrast,
-            saturation);
+        sws_setColorspaceDetails(sws.get(), inv_table, in_full, table, out_full, brigthness, contrast, saturation);
 
-        return std::shared_ptr<SwsContext>(sws.get(), [this, sws](SwsContext*) {
-            sws_.push(sws);
-        });
+        return std::shared_ptr<SwsContext>(sws.get(), [this, sws](SwsContext*) { sws_.push(sws); });
     }
 
     void send(core::const_frame                              in_frame,
@@ -391,7 +371,7 @@ struct Stream
                 frame = make_av_video_frame(in_frame, format_desc);
 
                 {
-                    auto frame2 = alloc_frame();
+                    auto frame2                 = alloc_frame();
                     frame2->sample_aspect_ratio = frame->sample_aspect_ratio;
                     frame2->width               = frame->width;
                     frame2->height              = frame->height;
@@ -407,13 +387,13 @@ struct Stream
                         auto sws = get_sws(frame->width, h);
 
                         uint8_t* src[4] = {};
-                        src[0] = frame->data[0] + frame->linesize[0] * (i * h);
+                        src[0]          = frame->data[0] + frame->linesize[0] * (i * h);
 
                         uint8_t* dst[4] = {};
-                        dst[0] = frame2->data[0] + frame2->linesize[0] * (i * h);
-                        dst[1] = frame2->data[1] + frame2->linesize[1] * (i * h);
-                        dst[2] = frame2->data[2] + frame2->linesize[2] * (i * h);
-                        dst[3] = frame2->data[3] + frame2->linesize[3] * (i * h);
+                        dst[0]          = frame2->data[0] + frame2->linesize[0] * (i * h);
+                        dst[1]          = frame2->data[1] + frame2->linesize[1] * (i * h);
+                        dst[2]          = frame2->data[2] + frame2->linesize[2] * (i * h);
+                        dst[3]          = frame2->data[3] + frame2->linesize[3] * (i * h);
 
                         sws_scale(sws.get(), src, frame->linesize, 0, h, dst, frame2->linesize);
                     });
@@ -514,11 +494,15 @@ struct ffmpeg_consumer : public core::frame_consumer
         }
     }
 
+    bool is_initialized() { return frame_thread_.joinable(); }
+
     // frame consumer
 
-    void initialize(const core::video_format_desc& format_desc, int channel_index) override
+    void initialize_inner(const core::video_format_desc& format_desc,
+                          const core::frame_timecode     start_timecode,
+                          int                            channel_index)
     {
-        if (frame_thread_.joinable()) {
+        if (is_initialized()) {
             CASPAR_THROW_EXCEPTION(invalid_operation() << msg_info("Cannot reinitialize ffmpeg-consumer."));
         }
 
@@ -573,6 +557,14 @@ struct ffmpeg_consumer : public core::frame_consumer
                 }
 
                 CASPAR_SCOPE_EXIT { avformat_free_context(oc); };
+
+                if (start_timecode.is_valid()) {
+                    core::frame_timecode tc = start_timecode;
+                    if (format_desc_.field_count != 1)
+                        tc += 1;
+
+                    av_dict_set(&oc->metadata, "timecode", u8(tc.string()).c_str(), 0);
+                }
 
                 boost::optional<Stream> video_stream;
                 if (oc->oformat->video_codec != AV_CODEC_ID_NONE) {
@@ -663,18 +655,21 @@ struct ffmpeg_consumer : public core::frame_consumer
 
                     core::const_frame frame;
                     frame_buffer_.pop(frame);
-                    graph_->set_value("input", (static_cast<double>(frame_buffer_.size() + 0.001) / frame_buffer_.capacity()));
+                    graph_->set_value("input",
+                                      (static_cast<double>(frame_buffer_.size() + 0.001) / frame_buffer_.capacity()));
 
                     caspar::timer frame_timer;
-                    tbb::parallel_invoke([&] {
-                        if (video_stream) {
-                            video_stream->send(frame, format_desc, packet_cb);
-                        }
-                    }, [&] {
-                        if (audio_stream) {
-                            audio_stream->send(frame, format_desc, packet_cb);
-                        }
-                    });
+                    tbb::parallel_invoke(
+                        [&] {
+                            if (video_stream) {
+                                video_stream->send(frame, format_desc, packet_cb);
+                            }
+                        },
+                        [&] {
+                            if (audio_stream) {
+                                audio_stream->send(frame, format_desc, packet_cb);
+                            }
+                        });
                     graph_->set_value("frame-time", frame_timer.elapsed() * format_desc.fps * 0.5);
 
                     if (!frame) {
@@ -691,8 +686,15 @@ struct ffmpeg_consumer : public core::frame_consumer
         });
     }
 
-    std::future<bool> send(core::const_frame frame) override
+    void initialize(const core::video_format_desc& format_desc, int channel_index) override
     {
+        initialize_inner(format_desc, core::frame_timecode::empty(), channel_index);
+    }
+
+    std::future<bool> send(core::frame_timecode timecode, core::const_frame frame) override
+    {
+        if (!is_initialized()) {
+        }
         {
             std::lock_guard<std::mutex> lock(exception_mutex_);
             if (exception_ != nullptr) {
@@ -719,6 +721,38 @@ struct ffmpeg_consumer : public core::frame_consumer
     const core::monitor::state& state() const { return state_; }
 };
 
+struct ffmpeg_consumer_proxy : public ffmpeg_consumer
+{
+    core::video_format_desc format_desc_;
+    int                     channel_index_;
+
+    ffmpeg_consumer_proxy(std::string path, std::string args, bool realtime)
+        : ffmpeg_consumer(path, args, realtime)
+    {
+    }
+
+    void initialize(const core::video_format_desc& format_desc, int channel_index) override
+    {
+        if (realtime_) {
+            initialize_inner(format_desc_, core::frame_timecode::empty(), channel_index_);
+            return;
+        }
+
+        // Needs a timecode to initialize, so is left until first frame
+        format_desc_   = format_desc;
+        channel_index_ = channel_index;
+    }
+
+    std::future<bool> send(core::frame_timecode timecode, core::const_frame frame) override
+    {
+        if (!is_initialized()) {
+            initialize_inner(format_desc_, timecode, channel_index_);
+        }
+
+        return ffmpeg_consumer::send(timecode, frame);
+    }
+};
+
 spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wstring>&                  params,
                                                       std::vector<spl::shared_ptr<core::video_channel>> channels)
 {
@@ -730,15 +764,16 @@ spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wst
     for (auto n = 2; n < params.size(); ++n) {
         args.emplace_back(u8(params[n]));
     }
-    return spl::make_shared<ffmpeg_consumer>(path, boost::join(args, L" "), boost::iequals(params.at(0), L"STREAM"));
+    return spl::make_shared<ffmpeg_consumer_proxy>(
+        path, boost::join(args, L" "), boost::iequals(params.at(0), L"STREAM"));
 }
 
 spl::shared_ptr<core::frame_consumer>
 create_preconfigured_consumer(const boost::property_tree::wptree&               ptree,
                               std::vector<spl::shared_ptr<core::video_channel>> channels)
 {
-    return spl::make_shared<ffmpeg_consumer>(u8(ptree.get<std::wstring>(L"path", L"")),
-                                             u8(ptree.get<std::wstring>(L"args", L"")),
-                                             ptree.get(L"realtime", false));
+    return spl::make_shared<ffmpeg_consumer_proxy>(u8(ptree.get<std::wstring>(L"path", L"")),
+                                                   u8(ptree.get<std::wstring>(L"args", L"")),
+                                                   ptree.get(L"realtime", false));
 }
 }} // namespace caspar::ffmpeg

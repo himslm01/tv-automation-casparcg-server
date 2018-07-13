@@ -163,6 +163,10 @@ class transition_producer : public frame_producer_base
     }
 
     const monitor::state& state() { return state_; }
+
+    const frame_timecode& timecode() override { return dst_producer_->timecode(); }
+    bool                  has_timecode() override { return dst_producer_->has_timecode(); }
+    bool                  provides_timecode() override { return dst_producer_->provides_timecode(); }
 };
 
 spl::shared_ptr<frame_producer> create_transition_producer(const spl::shared_ptr<frame_producer>& destination,

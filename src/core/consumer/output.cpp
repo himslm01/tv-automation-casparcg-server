@@ -83,7 +83,7 @@ struct output::impl
 
     void remove(const spl::shared_ptr<frame_consumer>& consumer) { remove(consumer->index()); }
 
-    void operator()(const_frame input_frame, const core::video_format_desc& format_desc)
+    void operator()(frame_timecode timecode, const_frame input_frame, const core::video_format_desc& format_desc)
     {
         if (!input_frame) {
             return;
@@ -122,7 +122,7 @@ struct output::impl
 
         for (auto it = consumers_.begin(); it != consumers_.end();) {
             try {
-                futures.emplace(it->first, it->second->send(input_frame));
+                futures.emplace(it->first, it->second->send(timecode, input_frame));
                 ++it;
             } catch (...) {
                 CASPAR_LOG_CURRENT_EXCEPTION();
@@ -173,9 +173,9 @@ void output::add(int index, const spl::shared_ptr<frame_consumer>& consumer) { i
 void output::add(const spl::shared_ptr<frame_consumer>& consumer) { impl_->add(consumer); }
 void output::remove(int index) { impl_->remove(index); }
 void output::remove(const spl::shared_ptr<frame_consumer>& consumer) { impl_->remove(consumer); }
-void output::operator()(const_frame frame, const video_format_desc& format_desc)
+void output::operator()(frame_timecode timecode, const_frame frame, const video_format_desc& format_desc)
 {
-    return (*impl_)(std::move(frame), format_desc);
+    return (*impl_)(timecode, std::move(frame), format_desc);
 }
 const monitor::state& output::state() const { return impl_->state_; }
 }} // namespace caspar::core

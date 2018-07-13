@@ -123,6 +123,10 @@ uint32_t frame_producer_base::nb_frames() const { return std::numeric_limits<uin
 
 uint32_t frame_producer_base::frame_number() const { return impl_->frame_number_; }
 
+const frame_timecode& frame_producer_base::timecode() { return frame_timecode::empty(); }
+bool                  frame_producer_base::has_timecode() { return false; }
+bool                  frame_producer_base::provides_timecode() { return false; }
+
 const spl::shared_ptr<frame_producer>& frame_producer::empty()
 {
     class empty_frame_producer : public frame_producer
@@ -141,6 +145,10 @@ const spl::shared_ptr<frame_producer>& frame_producer::empty()
             return make_ready_future(std::wstring(L""));
         }
         draw_frame last_frame() { return draw_frame{}; }
+
+        const frame_timecode& timecode() override { return frame_timecode::empty(); }
+        bool                  has_timecode() override { return false; }
+        bool                  provides_timecode() override { return false; }
     };
 
     static spl::shared_ptr<frame_producer> producer = spl::make_shared<empty_frame_producer>();
@@ -154,7 +162,6 @@ std::shared_ptr<executor>& producer_destroyer()
         result->set_capacity(std::numeric_limits<unsigned int>::max());
         return result;
     }();
-    ;
 
     return destroyer;
 }
@@ -232,6 +239,9 @@ class destroy_producer_proxy : public frame_producer
     uint32_t              nb_frames() const override { return producer_->nb_frames(); }
     draw_frame            last_frame() { return producer_->last_frame(); }
     const monitor::state& state() const { return producer_->state(); }
+    const frame_timecode& timecode() override { return producer_->timecode(); }
+    bool                  has_timecode() override { return producer_->has_timecode(); }
+    bool                  provides_timecode() override { return producer_->provides_timecode(); }
 };
 
 spl::shared_ptr<core::frame_producer> create_destroy_proxy(spl::shared_ptr<core::frame_producer> producer)

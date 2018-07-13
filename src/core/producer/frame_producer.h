@@ -23,6 +23,7 @@
 
 #include "../fwd.h"
 #include "../monitor/monitor.h"
+#include "timecode_source.h"
 
 #include <common/memory.h>
 
@@ -39,7 +40,7 @@
 
 namespace caspar { namespace core {
 
-class frame_producer
+class frame_producer : public timecode_source
 {
     frame_producer(const frame_producer&);
     frame_producer& operator=(const frame_producer&);
@@ -66,6 +67,9 @@ class frame_producer
     virtual draw_frame                      last_frame()         = 0;
     virtual void                            leading_producer(const spl::shared_ptr<frame_producer>&) {}
     virtual spl::shared_ptr<frame_producer> following_producer() const { return core::frame_producer::empty(); }
+    virtual const frame_timecode&           timecode() override          = 0;
+    virtual bool                            has_timecode() override      = 0;
+    virtual bool                            provides_timecode() override = 0;
 };
 
 class frame_producer_base : public frame_producer
@@ -76,10 +80,13 @@ class frame_producer_base : public frame_producer
 
     virtual std::future<std::wstring> call(const std::vector<std::wstring>& params) override;
 
-    void               paused(bool value) override;
-    uint32_t           nb_frames() const override;
-    uint32_t           frame_number() const override;
-    virtual draw_frame last_frame() override;
+    void                          paused(bool value) override;
+    uint32_t                      nb_frames() const override;
+    uint32_t                      frame_number() const override;
+    virtual draw_frame            last_frame() override;
+    virtual const frame_timecode& timecode() override;
+    virtual bool                  has_timecode() override;
+    virtual bool                  provides_timecode() override;
 
   private:
     virtual draw_frame receive(int nb_samples) override;
