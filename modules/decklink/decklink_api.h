@@ -114,6 +114,7 @@ T* get_raw(const CComPtr<T>& ptr)
 namespace caspar { namespace decklink {
 
 typedef const char* String;
+typedef const char* BSTR;
 typedef bool BOOL;
 #define TRUE true
 #define FALSE false
