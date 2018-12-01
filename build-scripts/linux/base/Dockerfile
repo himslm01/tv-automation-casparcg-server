@@ -10,7 +10,7 @@ ENV http_proxy=${http_proxy} \
 # It also says to execute 'rm -rf /var/lib/apt/lists/*' at the end of the install
 # https://docs.docker.com/engine/userguide/eng-image/dockerfile_best-practices/#apt-get
 RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get -y install \
+ && DEBIAN_FRONTEND=noninteractive apt-get -yq --no-install-recommends install \
 	cmake \
 	time \
 	lsb-release \
@@ -42,10 +42,12 @@ RUN apt-get update \
 	libnspr4 \
 	libgconf-2-4 \
 	libasound2 \
+	libfreeimage-dev \
+	libglew-dev \
+	libopenal-dev \
 	libopus-dev \
 	libgsm1-dev \
 	libmodplug-dev \
-	libvpx-dev \
 	libass-dev \
 	libbluray-dev \
 	libfribidi-dev \
@@ -62,7 +64,10 @@ RUN apt-get update \
 	libssl1.0.0 \
  && rm -rf /var/lib/apt/lists/*
 
-# only available in bionic
+# ffmpeg requires libvpx decoder version >=1.4.0
+#	libvpx-dev \
+
+# not available in trusty
 #	libglfw3-dev \
 #	libx265-dev \
 # Conflicts with gnutls-dev
@@ -70,6 +75,3 @@ RUN apt-get update \
 
 WORKDIR /opt/casparcg
 
-COPY --from=casparcg/ffmpeg:master-acdea9e-2 /opt/ffmpeg /opt/ffmpeg
-
-COPY ./ /opt/casparcg/
