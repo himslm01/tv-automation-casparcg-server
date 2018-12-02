@@ -126,9 +126,13 @@ else()
 			theoraenc
 			vorbis
 			vorbisenc
-			vpx
+			# vpx
 			x264
 			# xavs
+			xcb
+			xcb-shm
+			xcb-shape
+			xcb-xfixes
 			xvidcore
 			z
 			-Wl,--end-group

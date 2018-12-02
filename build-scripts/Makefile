@@ -49,6 +49,7 @@ build-casparcg:
 	--build-arg casparcg_from="casparcg_base:${CASPARCG_VERSION}" \
 	--build-arg casparcg_from_ffmpeg="casparcg_ffmpeg:${CASPARCG_VERSION}" \
 	--build-arg GIT_HASH="${GIT_HASH}" \
+	--build-arg BUILD_PARALLEL_THREADS=2 \
 	-f build-scripts/linux/casparcg/Dockerfile \
 	-t "casparcg_build:${CASPARCG_VERSION}" \
 	$${PWD}

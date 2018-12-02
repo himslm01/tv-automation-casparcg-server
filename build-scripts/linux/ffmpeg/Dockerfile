@@ -17,25 +17,9 @@ ENV FFMPEG_COMMIT="${FFMPEG_COMMIT}" \
 # https://docs.docker.com/engine/userguide/eng-image/dockerfile_best-practices/#apt-get
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends \
-	autoconf \
-	automake \
-	cmake \
-	curl \
-	bzip2 \
-	libexpat1-dev \
-	g++ \
-	gcc \
-	git \
 	gperf \
-	libtool \
-	make \
 	nasm \
-	perl \
-	pkg-config \
-	python \
-	libssl-dev \
 	yasm \
-	zlib1g-dev \
  && rm -rf /var/lib/apt/lists/*
 
 

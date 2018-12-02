@@ -13,6 +13,7 @@ RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get -yq --no-install-recommends install \
 	cmake \
 	time \
+	git \
 	lsb-release \
 	libglew-dev \
 	libfreeimage-dev \
@@ -62,6 +63,9 @@ RUN apt-get update \
 	libxss1 \
 	libgtk2.0-0 \
 	libssl1.0.0 \
+	libexpat1-dev \
+	libssl-dev \
+	zlib1g-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # ffmpeg requires libvpx decoder version >=1.4.0
