@@ -92,26 +92,36 @@ else()
 			core
 
 			-Wl,--start-group
-			avformat.so
 			avcodec.so
-			avutil.so
-			avfilter.so
 			avdevice.so
-			swscale.so
-			swresample.so
+			avfilter.so
+			avformat.so
+			avresample.so
+			avutil.so
 			postproc.so
+			swresample.so
+			swscale.so
 
 			ass
 			bluray
+			bz2
 			crypto
+			dl
+			enca
 			expat
+			fdk-aac
+			ffi
 			fontconfig
+			freetype
 			fribidi
+			gcrypt
 			gmp
 			gnutls
+			gpg-error
 			gsm
 			# hogweed
 			# ilbc
+			lzma
 			modplug
 			mp3lame
 			# nettle
@@ -119,6 +129,9 @@ else()
 			opencore-amrnb
 			opencore-amrwb
 			opus
+			p11-kit
+			png12
+			pthread
 			rtmp
 			ssl
 			tasn1
@@ -127,7 +140,10 @@ else()
 			vorbis
 			vorbisenc
 			# vpx
+			webp
 			x264
+			Xau
+			Xdmcp
 			# xavs
 			xcb
 			xcb-shm
