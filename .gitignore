@@ -16,3 +16,4 @@
 CMakeLists.txt.user
 .settings
 
+build-scripts/linux/CasparCG Server.tar.gz
