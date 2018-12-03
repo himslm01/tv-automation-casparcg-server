@@ -68,6 +68,10 @@ cp -f ../CHANGELOG "$SERVER_FOLDER/" || fail "Could not copy CHANGELOG"
 cp -f ../README "$SERVER_FOLDER/" || fail "Could not copy README"
 cp -f ../LICENSE "$SERVER_FOLDER/" || fail "Could not copy LICENSE"
 
+# Get the library dependencies
+echo Copying dependent libraries...
+bash ../build-scripts/linux/copy_deps.sh "$SERVER_FOLDER/bin/casparcg" "$SERVER_FOLDER/lib/"
+
 # Create tar.gz file
 echo Creating tag.gz...
 tar -cvzf "$BUILD_ARCHIVE_NAME.tar.gz" "$SERVER_FOLDER" || fail "Could not create archive"
