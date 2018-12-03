@@ -16,6 +16,9 @@ targets:
 
 	build-casparcg
 		builds CasparCG in a Docker container from the source code above
+	
+	extract-casparcg
+		copy the built "CasparCG Server.tar.gz" file from the casparcg_build image
 
 	clean-exited
 		removes ALL containers which are not running
@@ -30,14 +33,14 @@ default:
 build: build-base build-ffmpeg build-casparcg
 
 build-base:
-	pushd linux/base/ >/dev/null && docker build \
+	pushd base/ >/dev/null && docker build \
 	--build-arg http_proxy="${http_proxy}" \
 	--build-arg https_proxy="${https_proxy}" \
 	-t "casparcg_base:${CASPARCG_VERSION}" \
 	$${PWD}
 
 build-ffmpeg:
-	pushd linux/ffmpeg/ >/dev/null && docker build \
+	pushd ffmpeg/ >/dev/null && docker build \
 	--build-arg casparcg_from="casparcg_base:${CASPARCG_VERSION}" \
 	--build-arg http_proxy="${http_proxy}" \
 	--build-arg https_proxy="${https_proxy}" \
@@ -45,7 +48,7 @@ build-ffmpeg:
 	$${PWD}
 
 build-casparcg:
-	pushd ../ >/dev/null && docker build \
+	pushd ../../ >/dev/null && docker build \
 	--build-arg casparcg_from="casparcg_base:${CASPARCG_VERSION}" \
 	--build-arg casparcg_from_ffmpeg="casparcg_ffmpeg:${CASPARCG_VERSION}" \
 	--build-arg GIT_HASH="${GIT_HASH}" \
@@ -53,6 +56,13 @@ build-casparcg:
 	-f build-scripts/linux/casparcg/Dockerfile \
 	-t "casparcg_build:${CASPARCG_VERSION}" \
 	$${PWD}
+
+extract-casparcg:
+	set -e; \
+	cleanup() { docker rm -v $$tempContainer; }; \
+	tempContainer=$$(docker create "casparcg_build:${CASPARCG_VERSION}" sh); \
+	trap "cleanup" EXIT ; \
+	docker cp $$tempContainer:"/opt/casparcg/build/CasparCG Server.tar.gz" .
 
 clean: clean-exited clean-dangling
 
