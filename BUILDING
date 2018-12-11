@@ -54,6 +54,9 @@ Development using Visual Studio
 Linux
 =====
 
+Building
+--------
+
 All instructions are based on a clean install of the x86_64 version of Ubuntu
 Desktop 14.04.3 LTS. Other distributions might work as well.
 
@@ -77,6 +80,25 @@ Building a distribution
    run ./build-linux.sh instead.
 
 3. The distribution .tar.gz file can be found under build/
+
+Building in Docker
+------------------
+
+Tested on Ubuntu 18.04 and macOS 10.14
+
+1. Install make and Docker Engine (tested with Docker Engine 18.09)
+
+2. Enter the linux folder within the build-scripts folder
+
+To build CasparCG into a Docker image
+
+3. Run 'make build'
+
+To extract the distribution tar.gz file
+
+4. Run 'make extract-casparcg'
+
+The file 'CasparCG Server.tar.gz' will be created in the 'build-scripts/linux' folder
 
 Building manually from command line
 -----------------------------------
