@@ -34,7 +34,6 @@ do
 done
 
 # Dynamic deps
-cp "/usr/lib/x86_64-linux-gnu/nss/libsoftokn3.so" "$2"
-cp "/usr/lib/x86_64-linux-gnu/nss/libnssckbi.so" "$2"
+cp "/usr/lib/x86_64-linux-gnu/nss/*.so" "$2"
 
 echo "Done!"
